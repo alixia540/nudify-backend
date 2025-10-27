@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "description": "",
   "main": "paypal.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
-  },
+"scripts": {
+  "start": "react-scripts start",
+  "build": "react-scripts build"
+},
+
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -15,6 +16,9 @@
     "better-sqlite3": "^12.4.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "mongodb": "^6.20.0",
+    "mongoose": "^8.19.2",
+    "react-icons": "^5.5.0"
   }
 }

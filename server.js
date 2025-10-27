@@ -70,4 +70,10 @@ app.get("/api/credits/:email", (req, res) => {
 
 // ✅ Démarrage du serveur
 const PORT = process.env.PORT || 5000;
+// ✅ Route temporaire pour tester les crédits
+app.get("/api/credits/:email", (req, res) => {
+  const { email } = req.params;
+  res.json({ email, credits: 10 });
+});
+
 app.listen(PORT, () => console.log(`✅ Serveur backend en ligne sur le port ${PORT}`));

@@ -1,106 +1,148 @@
 import express from "express";
 import cors from "cors";
+import fetch from "node-fetch";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
-import paypal from "@paypal/checkout-server-sdk";
 
 dotenv.config();
 const app = express();
 app.use(express.json());
-app.use(cors());
 
-// --- 1️⃣ Connexion MongoDB ---
-mongoose
-  .connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
+// --- CORS autorisé ---
+app.use(
+  cors({
+    origin: [
+      process.env.FRONTEND_URL,
+      "http://localhost:5173",
+      "http://localhost:3000",
+    ],
+    credentials: true,
   })
+);
+
+// --- Connexion MongoDB ---
+mongoose
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ Connecté à MongoDB"))
   .catch((err) => console.error("❌ Erreur MongoDB :", err));
 
-// --- 2️⃣ Schéma utilisateur ---
+// --- Schéma utilisateur ---
 const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
+  email: String,
   credits: { type: Number, default: 0 },
 });
 const User = mongoose.model("User", userSchema);
 
-// --- 3️⃣ Configuration PayPal ---
-const paypalEnv = new paypal.core.LiveEnvironment(
-  process.env.PAYPAL_CLIENT_ID,
-  process.env.PAYPAL_SECRET
-);
-const paypalClient = new paypal.core.PayPalHttpClient(paypalEnv);
-
-// --- 4️⃣ Créer une commande ---
-app.post("/api/paypal/create-order", async (req, res) => {
-  const { amount } = req.body;
-
-  const request = new paypal.orders.OrdersCreateRequest();
-  request.prefer("return=representation");
-  request.requestBody({
-    intent: "CAPTURE",
-    purchase_units: [{ amount: { currency_code: "EUR", value: amount } }],
-  });
-
-  try {
-    const order = await paypalClient.execute(request);
-    res.json({ id: order.result.id });
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("Erreur création commande");
-  }
-});
-
-// --- 5️⃣ Capturer une commande PayPal et ajouter des crédits ---
-app.post("/api/paypal/capture-order", async (req, res) => {
-  const { orderID, email } = req.body;
-
-  const request = new paypal.orders.OrdersCaptureRequest(orderID);
-  request.requestBody({});
-
-  try {
-    const capture = await paypalClient.execute(request);
-    const amount = parseFloat(
-      capture.result.purchase_units[0].payments.captures[0].amount.value
-    );
-
-    let creditsToAdd = 0;
-    if (amount === 1) creditsToAdd = 1; // 1€ = 1 crédit
-    else if (amount === 15) creditsToAdd = 20; // VIP
-    else if (amount === 30) creditsToAdd = 50; // PREMIUM
-
-    const user = await User.findOneAndUpdate(
-      { email },
-      { $inc: { credits: creditsToAdd } },
-      { new: true, upsert: true }
-    );
-
-    res.json({ success: true, credits: user.credits });
-  } catch (err) {
-    console.error("Erreur capture PayPal :", err);
-    res.status(500).send("Erreur capture commande");
-  }
-});
-
-// --- 6️⃣ Récupérer les crédits d’un utilisateur ---
+// --- Récupérer crédits ---
 app.get("/api/credits/:email", async (req, res) => {
   const { email } = req.params;
   try {
     const user = await User.findOne({ email });
-    if (!user) {
-      // Si l'utilisateur n'existe pas encore → renvoyer 0
-      return res.json({ credits: 0 });
-    }
-    // Sinon renvoyer ses vrais crédits
+    if (!user) return res.json({ credits: 0 });
     res.json({ credits: user.credits });
   } catch (err) {
     console.error("Erreur récupération crédits :", err);
-    res.status(500).send("Erreur récupération crédits");
+    res.status(500).json({ error: "Erreur récupération crédits" });
   }
 });
 
+// --- Créer commande PayPal ---
+app.post("/api/paypal/create-order", async (req, res) => {
+  try {
+    const { amount } = req.body;
 
-// --- 7️⃣ Lancement du serveur ---
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`🚀 Serveur actif sur le port ${PORT}`));
+    // Auth PayPal
+    const auth = await fetch("https://api-m.sandbox.paypal.com/v1/oauth2/token", {
+      method: "POST",
+      headers: {
+        Authorization:
+          "Basic " +
+          Buffer.from(
+            `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
+          ).toString("base64"),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: "grant_type=client_credentials",
+    });
+
+    const tokenData = await auth.json();
+    if (!tokenData.access_token)
+      return res.status(400).json({ error: "Erreur token PayPal", details: tokenData });
+
+    const order = await fetch("https://api-m.sandbox.paypal.com/v2/checkout/orders", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenData.access_token}`,
+      },
+      body: JSON.stringify({
+        intent: "CAPTURE",
+        purchase_units: [
+          { amount: { currency_code: "EUR", value: amount || "1.00" } },
+        ],
+      }),
+    });
+
+    const orderData = await order.json();
+    if (!orderData.id)
+      return res.status(400).json({ error: "Erreur création commande PayPal", details: orderData });
+
+    res.json({ id: orderData.id });
+  } catch (err) {
+    console.error("❌ Erreur PayPal :", err);
+    res.status(500).json({ error: "Erreur serveur PayPal" });
+  }
+});
+
+// --- Capturer commande PayPal ---
+app.post("/api/paypal/capture-order", async (req, res) => {
+  try {
+    const { orderId, email } = req.body;
+
+    const auth = await fetch("https://api-m.sandbox.paypal.com/v1/oauth2/token", {
+      method: "POST",
+      headers: {
+        Authorization:
+          "Basic " +
+          Buffer.from(
+            `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
+          ).toString("base64"),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: "grant_type=client_credentials",
+    });
+    const tokenData = await auth.json();
+
+    const capture = await fetch(
+      `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenData.access_token}`,
+        },
+      }
+    );
+
+    const captureData = await capture.json();
+    if (!captureData.status || captureData.status !== "COMPLETED")
+      return res.status(400).json({ error: "Erreur capture PayPal", details: captureData });
+
+    await User.findOneAndUpdate(
+      { email },
+      { $inc: { credits: 1 } },
+      { upsert: true, new: true }
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ Erreur capture PayPal :", err);
+    res.status(500).json({ error: "Erreur capture PayPal" });
+  }
+});
+
+// --- Lancement ---
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () =>
+  console.log(`🚀 Serveur actif sur le port ${PORT} (mode sandbox)`)
+);

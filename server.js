@@ -179,6 +179,18 @@ app.get("/api/test", (req, res) => {
   res.json({ message: "✅ Backend Nudify en ligne et fonctionnel !" });
 });
 
+// 🔹 Changement de mot de passe
+app.post("/api/change-password", async (req, res) => {
+  const { email, newPassword } = req.body;
+  try {
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await User.updateOne({ email }, { $set: { password: hashed } });
+    res.json({ message: "Mot de passe changé avec succès" });
+  } catch (err) {
+    console.error("Erreur changement mdp:", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 //
 // 🚀 Lancement du serveur
 //
